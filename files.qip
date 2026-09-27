@@ -57,3 +57,4 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/na1/na1_interrupts.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/na1/na1_word_arbiter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/na1/na1_blitter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/na1/na1_blitter_fabric.sv
+set_global_assignment -name VERILOG_FILE rtl/ra/jtframe_ra_mirror.v

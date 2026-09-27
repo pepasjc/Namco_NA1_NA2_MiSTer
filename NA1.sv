@@ -187,7 +187,7 @@ module emu (
     // Like J1/V, `v` is counted by menu.cpp's selection pass but never drawn,
     // so it MUST stay at the end with them.
     `include "build_id.v"
-    localparam CONF_STR = {"NA1;;-;O[3:2],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%;-;O[7:6],Orientation,Horizontal,Vertical CCW,Vertical CW,Flipped;-;O[4],Service Mode,Off,On;-;P1,CRT Adjust;P1O[96],CRT Adjust,Off,On;H1P1O[100:97],CRT H-Size,0,+1,+2,+3,+4,+5,+6,+7,-8,-7,-6,-5,-4,-3,-2,-1;H1P1O[104:101],CRT H-Position,0,+6,+12,+18,+24,+30,+36,+42,-48,-42,-36,-30,-24,-18,-12,-6;H1P1O[108:105],CRT V-Shift,0,+1,+2,+3,+4,+5,+6,+7,-8,-7,-6,-5,-4,-3,-2,-1;-;R[0],Reset;-;J1,Shot,Bomb,Button 3,Start,Coin,Button 6;v,1;V,v",`BUILD_DATE};
+    localparam CONF_STR = {"RA_NA1;;-;O[3:2],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%;-;O[7:6],Orientation,Horizontal,Vertical CCW,Vertical CW,Flipped;-;O[4],Service Mode,Off,On;-;P1,CRT Adjust;P1O[96],CRT Adjust,Off,On;H1P1O[100:97],CRT H-Size,0,+1,+2,+3,+4,+5,+6,+7,-8,-7,-6,-5,-4,-3,-2,-1;H1P1O[104:101],CRT H-Position,0,+6,+12,+18,+24,+30,+36,+42,-48,-42,-36,-30,-24,-18,-12,-6;H1P1O[108:105],CRT V-Shift,0,+1,+2,+3,+4,+5,+6,+7,-8,-7,-6,-5,-4,-3,-2,-1;-;R[0],Reset;-;J1,Shot,Bomb,Button 3,Start,Coin,Button 6;v,1;V,v",`BUILD_DATE};
     wire forced_scandoubler, direct_video;
     wire [21:0] gamma_bus;
     wire [31:0] joystick_0, joystick_1, joystick_2, joystick_3;
@@ -302,10 +302,17 @@ module emu (
         .mcu_mailbox_write(mailbox_write),.mcu_mailbox_slot(mailbox_slot),
         .mcu_mailbox_wdata(mailbox_wdata),.mcu_mailbox_byte_en(mailbox_byte_en),
         .mcu_mailbox_ack(mailbox_ack),.mcu_mailbox_rdata(mailbox_rdata));
+    // RetroAchievements mirror (RETROACHIEVEMENTS, at the end of this module)
+    wire        ra_add_wr;
+    wire [11:0] ra_add_addr;
+    wire [15:0] ra_add_wdata;
+    wire  [1:0] ra_add_be;
+    wire        ra_active;
     na1_additional_ram additional(.clk_sys(clk_sys),.reset(reset_system),
         .req(peripheral_req[10]),.write(peripheral_write),.addr(peripheral_addr),
         .wdata(peripheral_wdata),.byte_en(peripheral_byte_en),
-        .ack(additional_ack),.rdata(additional_rdata));
+        .ack(additional_ack),.rdata(additional_rdata),
+        .ra_wr(ra_add_wr),.ra_word_addr(ra_add_addr),.ra_wdata(ra_add_wdata),.ra_byte_en(ra_add_be));
     na1_eeprom eeprom(.clk_sys(clk_sys),.reset(reset_system),
         .req(peripheral_req[4]),.write(peripheral_write),.addr(peripheral_addr),
         .wdata(peripheral_wdata),.byte_en(peripheral_byte_en),
@@ -819,7 +826,21 @@ module emu (
     wire rotate_ccw = hdmi_rotate_ccw;  // OSD "Vertical CCW" (orient 01): rotate H 90 CCW
     wire flip = 1'b0;                   // M24: native flip is upstream; never used
     wire video_rotated;
-    screen_rotate screen_rotate(.*);
+    // RetroAchievements: screen_rotate's DDR port goes through the RA mirror's
+    // mux (RETROACHIEVEMENTS, below) instead of straight to DDRAM_*.
+    wire        rot_DDRAM_CLK,rot_DDRAM_WE,rot_DDRAM_RD;
+    wire  [7:0] rot_DDRAM_BURSTCNT,rot_DDRAM_BE;
+    wire [28:0] rot_DDRAM_ADDR;
+    wire [63:0] rot_DDRAM_DIN;
+    screen_rotate screen_rotate(
+        .CLK_VIDEO(CLK_VIDEO),.CE_PIXEL(CE_PIXEL),
+        .VGA_R(VGA_R),.VGA_G(VGA_G),.VGA_B(VGA_B),.VGA_HS(VGA_HS),.VGA_VS(VGA_VS),.VGA_DE(VGA_DE),
+        .rotate_ccw(rotate_ccw),.no_rotate(no_rotate),.flip(flip),.video_rotated(video_rotated),
+        .FB_EN(FB_EN),.FB_FORMAT(FB_FORMAT),.FB_WIDTH(FB_WIDTH),.FB_HEIGHT(FB_HEIGHT),
+        .FB_BASE(FB_BASE),.FB_STRIDE(FB_STRIDE),.FB_VBL(FB_VBL),.FB_LL(FB_LL),
+        .DDRAM_CLK(rot_DDRAM_CLK),.DDRAM_BUSY(DDRAM_BUSY | ra_active),.DDRAM_BURSTCNT(rot_DDRAM_BURSTCNT),
+        .DDRAM_ADDR(rot_DDRAM_ADDR),.DDRAM_DIN(rot_DDRAM_DIN),.DDRAM_BE(rot_DDRAM_BE),
+        .DDRAM_WE(rot_DDRAM_WE),.DDRAM_RD(rot_DDRAM_RD));
     assign VGA_DISABLE = 1'b0;
     assign VGA_F1 = 1'b0;
     assign VGA_SCALER = 1'b0;
@@ -886,7 +907,87 @@ module emu (
     assign USER_OUT = '1;
     assign {UART_RTS,UART_TXD,UART_DTR} = 3'd0;
     assign {SD_SCK,SD_MOSI,SD_CS} = 'z;
-    // DDR3 (DDRAM_*) is driven only by screen_rotate above (the M21 HDMI/
-    // scaler rotation framebuffer); all NA-1 game state/memory still lives
-    // exclusively in SDRAM, unchanged.
+    // ------------------------------------------------ RETROACHIEVEMENTS
+    // RetroAchievements RAM mirror (rtl/ra/jtframe_ra_mirror.v, from jotego's
+    // JTFRAME). A 64 kB shadow, fed by snooping writes, is copied to DDR3 at
+    // 0x3D000000 once per frame in the "RACH" layout the RA build of
+    // Main_MiSTer reads. RA arcade sets use FinalBurn Neo's d_namcona1.cpp
+    // "All Ram" area: the 512 kB 68000 work RAM at offset 0, then MCU RAM
+    // (0x8000), mailbox (0x10), palette (0x2000), character RAM (0x40000) and
+    // video RAM $FF0000-$FFDFFF from offset 0xCA010. Each 68000 word is stored
+    // as-is in a little-endian lane (mirror byte k = 68000 byte k^1). The
+    // tinklpit and numanath sets read work RAM below 0xFC00 and two bytes at
+    // 0xD7F32/0xD7F3C, which is $FFDF22/$FFDF2C in the additional RAM at
+    // $FFC000. Shadow layout and ARM region table { ra_start, len, mirror }:
+    //   { 0x00000, 0xFC00, 0x0000 }  work RAM $000000-$00FBFF
+    //   { 0xD7C00, 0x0400, 0xFC00 }  additional RAM $FFDBF0-$FFDFEF
+    // Taps: the work RAM port into na1_sdram_memory, which carries every
+    // write into the shared RAM (68000, C69/C70 MCU and blitter), taken on the
+    // first clock of each acknowledged write; and na1_additional_ram's
+    // storage write. An additional-RAM write that meets a work RAM write
+    // waits one clock (both are at least two clocks apart on their own).
+    // Both taps are registered first: work_ack comes through the blitter
+    // fabric and the MCU interface, too long a path to reach M10K directly.
+    reg         ra_w_hit=1'b0,ra_w_l=1'b0;
+    reg  [17:0] ra_w_a=18'd0;
+    reg  [15:0] ra_w_d=16'd0;
+    reg   [1:0] ra_w_b=2'd0;
+    reg         ra_a_wr=1'b0;
+    reg  [11:0] ra_a_a=12'd0;
+    reg  [15:0] ra_a_d=16'd0;
+    reg   [1:0] ra_a_b=2'd0;
+    always @(posedge clk_sys) begin
+        ra_w_hit<=work_req && work_write && work_ack;
+        ra_w_l<=ra_w_hit;
+        ra_w_a<=work_word_addr;ra_w_d<=work_wdata;ra_w_b<=work_byte_en;
+        ra_a_wr<=ra_add_wr;ra_a_a<=ra_add_addr;ra_a_d<=ra_add_wdata;ra_a_b<=ra_add_be;
+    end
+    wire        ra_work_ev=ra_w_hit && !ra_w_l && ra_w_a<18'h07e00;
+    wire        ra_add_ev=ra_a_wr && ra_a_a>=12'hdf8 && ra_a_a<=12'hff7;
+    reg         ra_add_pend=1'b0;
+    reg  [14:0] ra_add_word=15'd0;
+    reg  [15:0] ra_add_d=16'd0;
+    reg   [1:0] ra_add_b=2'd0;
+    always @(posedge clk_sys) begin
+        if(ra_add_ev) begin
+            ra_add_pend<=1'b1;
+            ra_add_word<=15'h7e00+{3'd0,ra_a_a-12'hdf8};
+            ra_add_d<=ra_a_d;ra_add_b<=ra_a_b;
+        end else if(!ra_work_ev) ra_add_pend<=1'b0;
+    end
+    reg  [14:0] ra_wr_word=15'd0;
+    reg  [15:0] ra_wr_din=16'd0;
+    reg   [1:0] ra_wr_be=2'd0;
+    always @(posedge clk_sys) begin
+        ra_wr_word<=ra_work_ev ? ra_w_a[14:0] : ra_add_word;
+        ra_wr_din <=ra_work_ev ? ra_w_d : ra_add_d;
+        ra_wr_be  <=ra_work_ev ? ra_w_b : (ra_add_pend ? ra_add_b : 2'b00);
+    end
+    // screen_rotate writes DDR whenever VGA_DE is high and ignores DDRAM_BUSY,
+    // so the copy starts only once the output DE has been low for longer than
+    // any HBlank: 4096 clocks = 41 us, against a 63.9 us line; the copy itself
+    // takes ~0.1 ms of the ~2.5 ms VBlank. Never during a ROM download.
+    reg  [12:0] ra_de_idle=13'd0;
+    always @(posedge clk_sys) begin
+        if(VGA_DE) ra_de_idle<=13'd0;
+        else if(!ra_de_idle[12]) ra_de_idle<=ra_de_idle+13'd1;
+    end
+    wire  [7:0] ra_DDRAM_BURSTCNT,ra_DDRAM_BE;
+    wire [28:0] ra_DDRAM_ADDR;
+    wire [63:0] ra_DDRAM_DIN;
+    wire        ra_DDRAM_WE;
+    jtframe_ra_mirror #(.AW(16)) ra_mirror(
+        .rst(!pll_locked),.clk(clk_sys),.lvbl(!ra_de_idle[12]),.hold(download_active),
+        .wr_word(ra_wr_word),.wr_din(ra_wr_din),.wr_be(ra_wr_be),
+        .active(ra_active),.ddr_busy(DDRAM_BUSY),.ddr_burstcnt(ra_DDRAM_BURSTCNT),
+        .ddr_addr(ra_DDRAM_ADDR),.ddr_we(ra_DDRAM_WE),.ddr_be(ra_DDRAM_BE),.ddr_din(ra_DDRAM_DIN));
+    // DDRAM pin mux: the mirror while it copies, screen_rotate otherwise.
+    // Both run on clk_sys (CLK_VIDEO is clk_sys).
+    assign DDRAM_CLK      = ra_active ? clk_sys           : rot_DDRAM_CLK;
+    assign DDRAM_BURSTCNT = ra_active ? ra_DDRAM_BURSTCNT : rot_DDRAM_BURSTCNT;
+    assign DDRAM_ADDR     = ra_active ? ra_DDRAM_ADDR     : rot_DDRAM_ADDR;
+    assign DDRAM_DIN      = ra_active ? ra_DDRAM_DIN      : rot_DDRAM_DIN;
+    assign DDRAM_BE       = ra_active ? ra_DDRAM_BE       : rot_DDRAM_BE;
+    assign DDRAM_WE       = ra_active ? ra_DDRAM_WE       : rot_DDRAM_WE;
+    assign DDRAM_RD       = ra_active ? 1'b0              : rot_DDRAM_RD;
 endmodule
